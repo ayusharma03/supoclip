@@ -706,3 +706,78 @@ def test_tiktok_profile_only_requests_basic_scope_fields():
     assert profile.external_account_id == "o1"
     assert profile.display_name == "Creator"
     assert profile.username is None
+
+
+def _system_user_config(**overrides):
+    return _config(
+        instagram_app_id=None,
+        instagram_app_secret=None,
+        instagram_system_user_token="sys-token",
+        instagram_account_id="1784",
+        **overrides,
+    )
+
+
+def test_instagram_system_user_token_alone_configures_the_provider():
+    provider = InstagramProvider(_system_user_config(), session=FakeSession({}))
+
+    assert provider.is_configured
+    assert provider.uses_system_user
+    assert provider.needs_local_file
+    assert not InstagramProvider(_config(), session=FakeSession({})).needs_local_file
+
+
+def test_instagram_connect_system_user_links_the_configured_account():
+    session = FakeSession(
+        {("GET", "graph.facebook.com"): FakeResponse(200, {"id": "1784", "username": "pod_cuts14", "name": "Viral Pods"})}
+    )
+    provider = InstagramProvider(_system_user_config(), session=session)
+
+    tokens, profile = provider.connect_system_user()
+
+    assert session.calls[0][1].endswith("/1784")
+    assert session.calls[0][2]["headers"]["Authorization"] == "Bearer sys-token"
+    assert tokens.access_token == "sys-token"
+    assert tokens.refresh_token is None and tokens.expires_at is None
+    assert profile.username == "pod_cuts14"
+    assert profile.metadata == {"ig_user_id": "1784", "login": "system_user"}
+
+
+def test_instagram_system_user_publish_uploads_the_file_without_a_public_url(clip_file):
+    session = FakeSession(
+        {
+            ("POST", "/1784/media_publish"): FakeResponse(200, {"id": "media-9"}),
+            ("POST", "/1784/media"): FakeResponse(
+                200, {"id": "container-1", "uri": "https://rupload.facebook.com/ig-api-upload/container-1"}
+            ),
+            ("POST", "rupload.facebook.com"): FakeResponse(200, {"success": True}),
+            ("GET", "/container-1"): FakeResponse(200, {"status_code": "FINISHED"}),
+            ("GET", "/media-9"): FakeResponse(200, {"permalink": "https://instagram.com/reel/xyz"}),
+        }
+    )
+    provider = InstagramProvider(_system_user_config(), session=session, sleep=lambda _: None)
+    from src.social.base import PublishRequest
+
+    result = provider.publish(
+        "sys-token",
+        PublishRequest(
+            file_path=clip_file,
+            title="Title",
+            caption="Caption",
+            hashtags=["reels"],
+            privacy_level="public",
+            account_metadata={"ig_user_id": "1784", "login": "system_user"},
+        ),
+    )
+
+    assert result.external_post_id == "media-9"
+    assert result.external_url == "https://instagram.com/reel/xyz"
+    graph_calls = [c for c in session.calls if "rupload" not in c[1]]
+    assert all(url.startswith("https://graph.facebook.com/") for _m, url, _k in graph_calls)
+    create = next(c for c in session.calls if c[1].endswith("/1784/media"))
+    assert create[2]["data"]["upload_type"] == "resumable"
+    assert "video_url" not in create[2]["data"]
+    upload = next(c for c in session.calls if "rupload" in c[1])
+    assert upload[2]["headers"]["Authorization"] == "OAuth sys-token"
+    assert upload[2]["headers"]["file_size"] == "1024"
+    assert upload[2]["headers"]["offset"] == "0"

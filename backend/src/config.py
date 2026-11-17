@@ -265,6 +265,10 @@ class Config:
         self.instagram_app_secret = self._get_optional_env(
             "INSTAGRAM_APP_SECRET"
         ) or self._get_optional_env("META_APP_SECRET")
+        # Newer Meta apps only offer Unified login: a never-expiring system-user
+        # token for one account instead of the Instagram Login OAuth flow.
+        self.instagram_system_user_token = self._get_optional_env("INSTAGRAM_SYSTEM_USER_TOKEN")
+        self.instagram_account_id = self._get_optional_env("INSTAGRAM_ACCOUNT_ID")
         # OAuth callbacks and public media fetches (Instagram pulls the video
         # from a URL) both go through the frontend, so they default to the
         # public app URL.

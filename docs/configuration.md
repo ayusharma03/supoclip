@@ -350,6 +350,7 @@ that app from **Settings → Social Accounts**; tokens are stored encrypted with
 | `YOUTUBE_OAUTH_CLIENT_ID` / `YOUTUBE_OAUTH_CLIENT_SECRET` | Google OAuth client (Web application) with the YouTube Data API v3 enabled. `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` are accepted as aliases. |
 | `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET` | TikTok for Developers app with Login Kit and the Content Posting API (scopes `user.info.basic`, `video.publish`, `video.list`) |
 | `INSTAGRAM_APP_ID` / `INSTAGRAM_APP_SECRET` | Meta app using "Instagram API with Instagram Login". `META_APP_ID` / `META_APP_SECRET` are accepted as aliases. |
+| `INSTAGRAM_SYSTEM_USER_TOKEN` / `INSTAGRAM_ACCOUNT_ID` | For Meta apps that only offer "API setup with Unified login": a system-user token (Business settings → System users, expiry Never, `instagram_basic` + `instagram_content_publish`) and the Instagram account id it posts to. Connect links that account directly (no OAuth), and Reels upload the clip file through graph.facebook.com, so no public media URL is needed. |
 | `SOCIAL_OAUTH_REDIRECT_BASE_URL` | Base URL for OAuth callbacks; defaults to `NEXT_PUBLIC_APP_URL` |
 | `SOCIAL_PUBLIC_MEDIA_BASE_URL` | Base URL Instagram fetches videos from; defaults to `NEXT_PUBLIC_APP_URL` and must be publicly reachable |
 | `SOCIAL_METRICS_REFRESH_HOURS` | Minimum hours between metric pulls per post (default `6`) |

@@ -1242,6 +1242,33 @@ class FakeInstagram(FakeProvider):
     needs_local_file = False
 
 
+@pytest.mark.asyncio
+async def test_system_user_connect_links_the_account_without_oauth(service, provider):
+    provider.uses_system_user = True
+    provider.connect_system_user = lambda: (
+        OAuthTokens(access_token="sys-token"),
+        AccountProfile(
+            external_account_id="1784",
+            display_name="Viral Pods",
+            username="pod_cuts14",
+            metadata={"ig_user_id": "1784", "login": "system_user"},
+        ),
+    )
+    service.config.app_base_url = "https://app.example"
+
+    start = await service.start_connection("user-1", "youtube")
+
+    assert start["authorize_url"] == (
+        "https://app.example/settings/social?connected=youtube&account=pod_cuts14"
+    )
+    assert service.repo.states == {}
+    (stored,) = service.repo.accounts.values()
+    assert stored["user_id"] == "user-1"
+    assert stored["external_account_id"] == "1784"
+    assert stored["refresh_token_encrypted"] is None
+    assert stored["metadata"]["login"] == "system_user"
+
+
 @pytest.fixture
 def s3_service(service, tmp_path):
     config = Config()

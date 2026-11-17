@@ -15,9 +15,10 @@ Metrics: ``/{media_id}?fields=like_count,comments_count`` plus
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 from ..config import Config, get_config
@@ -41,6 +42,10 @@ AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
 SHORT_TOKEN_URL = "https://api.instagram.com/oauth/access_token"
 GRAPH_BASE = "https://graph.instagram.com"
 GRAPH_API = f"{GRAPH_BASE}/{API_VERSION}"
+# Unified login (system-user tokens) talks to the Facebook Graph API instead.
+FACEBOOK_GRAPH_API = f"https://graph.facebook.com/{API_VERSION}"
+SYSTEM_USER_LOGIN = "system_user"
+SYSTEM_USER_SCOPES = "instagram_basic,instagram_content_publish"
 
 SCOPES = (
     "instagram_business_basic",
@@ -62,7 +67,6 @@ class InstagramProvider(SocialProvider):
     name = "instagram"
     display_name = "Instagram Reels"
     supported_privacy_levels = ("public",)
-    needs_local_file = False
 
     def __init__(self, config: Optional[Config] = None, session=None, sleep=time.sleep):
         super().__init__(session)
@@ -71,7 +75,42 @@ class InstagramProvider(SocialProvider):
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.config.instagram_app_id and self.config.instagram_app_secret)
+        return self.uses_system_user or bool(
+            self.config.instagram_app_id and self.config.instagram_app_secret
+        )
+
+    @property
+    def uses_system_user(self) -> bool:
+        return bool(self.config.instagram_system_user_token and self.config.instagram_account_id)
+
+    @property
+    def needs_local_file(self) -> bool:
+        # Instagram Login fetches a public URL; system-user uploads send the file.
+        return self.uses_system_user
+
+    def connect_system_user(self) -> Tuple[OAuthTokens, AccountProfile]:
+        """Link the account named by the server's system-user token; no OAuth round trip."""
+        token = self.config.instagram_system_user_token
+        response = self.http.get(
+            f"{FACEBOOK_GRAPH_API}/{self.config.instagram_account_id}",
+            params={"fields": "id,username,name,profile_picture_url"},
+            headers=self._auth_headers(token),
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        self._raise_for_status(response, "load the Instagram account")
+        payload = response.json()
+        ig_id = str(payload.get("id") or "")
+        if not ig_id:
+            raise SocialProviderError("Instagram did not return an account id")
+        profile = AccountProfile(
+            external_account_id=ig_id,
+            display_name=payload.get("name") or payload.get("username"),
+            username=payload.get("username"),
+            avatar_url=payload.get("profile_picture_url"),
+            metadata={"ig_user_id": ig_id, "login": SYSTEM_USER_LOGIN},
+        )
+        # System-user tokens never expire, so there is nothing to refresh.
+        return OAuthTokens(access_token=token, scopes=SYSTEM_USER_SCOPES), profile
 
     # -- OAuth ----------------------------------------------------------
     def build_authorize_url(
@@ -198,36 +237,20 @@ class InstagramProvider(SocialProvider):
 
     # -- publishing -----------------------------------------------------
     def publish(self, access_token: str, request: PublishRequest) -> PublishResult:
-        if not request.public_media_url:
-            raise SocialProviderError(
-                "Instagram needs a publicly reachable video URL. Set NEXT_PUBLIC_APP_URL "
-                "(or SOCIAL_PUBLIC_MEDIA_BASE_URL) to a URL Instagram can fetch."
-            )
+        api, owner = _graph_for(request.account_metadata)
         caption = build_caption(request.caption or request.title, request.hashtags, CAPTION_MAX_LENGTH)
+        if api == FACEBOOK_GRAPH_API:
+            container_id = self._upload_container(access_token, request.file_path, caption, owner)
+        else:
+            container_id = self._create_url_container(access_token, request.public_media_url, caption)
 
-        create_response = self.http.post(
-            f"{GRAPH_API}/me/media",
-            data={
-                "media_type": "REELS",
-                "video_url": request.public_media_url,
-                "caption": caption,
-                "share_to_feed": "true",
-            },
-            headers=self._auth_headers(access_token),
-            timeout=DEFAULT_HTTP_TIMEOUT,
-        )
-        self._raise_for_status(create_response, "create the Instagram media container")
-        container_id = create_response.json().get("id")
-        if not container_id:
-            raise SocialProviderError("Instagram did not return a media container id")
-
-        self._wait_for_container(access_token, container_id)
+        self._wait_for_container(access_token, container_id, api)
 
         # The container is harmless until published; media_publish may create
         # the reel even if its response is lost.
         with ambiguous_outcome("publish the Instagram reel"):
             publish_response = self.http.post(
-                f"{GRAPH_API}/me/media_publish",
+                f"{api}/{owner}/media_publish",
                 data={"creation_id": container_id},
                 headers=self._auth_headers(access_token),
                 timeout=DEFAULT_HTTP_TIMEOUT,
@@ -240,7 +263,7 @@ class InstagramProvider(SocialProvider):
         permalink = None
         try:
             link_response = self.http.get(
-                f"{GRAPH_API}/{media_id}",
+                f"{api}/{media_id}",
                 params={"fields": "permalink"},
                 headers=self._auth_headers(access_token),
                 timeout=DEFAULT_HTTP_TIMEOUT,
@@ -256,11 +279,68 @@ class InstagramProvider(SocialProvider):
             raw={"container_id": container_id},
         )
 
-    def _wait_for_container(self, access_token: str, container_id: str) -> None:
+    def _create_url_container(
+        self, access_token: str, public_media_url: Optional[str], caption: str
+    ) -> str:
+        if not public_media_url:
+            raise SocialProviderError(
+                "Instagram needs a publicly reachable video URL. Set NEXT_PUBLIC_APP_URL "
+                "(or SOCIAL_PUBLIC_MEDIA_BASE_URL) to a URL Instagram can fetch."
+            )
+        response = self.http.post(
+            f"{GRAPH_API}/me/media",
+            data={
+                "media_type": "REELS",
+                "video_url": public_media_url,
+                "caption": caption,
+                "share_to_feed": "true",
+            },
+            headers=self._auth_headers(access_token),
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        self._raise_for_status(response, "create the Instagram media container")
+        container_id = response.json().get("id")
+        if not container_id:
+            raise SocialProviderError("Instagram did not return a media container id")
+        return container_id
+
+    def _upload_container(self, access_token: str, file_path: str, caption: str, owner: str) -> str:
+        """Resumable upload of the local file, so no public media URL is needed."""
+        response = self.http.post(
+            f"{FACEBOOK_GRAPH_API}/{owner}/media",
+            data={
+                "media_type": "REELS",
+                "upload_type": "resumable",
+                "caption": caption,
+                "share_to_feed": "true",
+            },
+            headers=self._auth_headers(access_token),
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        self._raise_for_status(response, "create the Instagram media container")
+        payload = response.json()
+        container_id, upload_uri = payload.get("id"), payload.get("uri")
+        if not container_id or not upload_uri:
+            raise SocialProviderError("Instagram did not return a resumable upload session")
+        with open(file_path, "rb") as handle:
+            upload = self.http.post(
+                upload_uri,
+                data=handle,
+                headers={
+                    "Authorization": f"OAuth {access_token}",
+                    "offset": "0",
+                    "file_size": str(os.path.getsize(file_path)),
+                },
+                timeout=max(DEFAULT_HTTP_TIMEOUT, 900),
+            )
+        self._raise_for_status(upload, "upload the video to Instagram")
+        return container_id
+
+    def _wait_for_container(self, access_token: str, container_id: str, api: str = GRAPH_API) -> None:
         deadline = time.monotonic() + CONTAINER_POLL_TIMEOUT_SECONDS
         while True:
             response = self.http.get(
-                f"{GRAPH_API}/{container_id}",
+                f"{api}/{container_id}",
                 params={"fields": "status_code,status"},
                 headers=self._auth_headers(access_token),
                 timeout=DEFAULT_HTTP_TIMEOUT,
@@ -284,8 +364,9 @@ class InstagramProvider(SocialProvider):
     def fetch_metrics(
         self, access_token: str, external_post_id: str, account_metadata: Dict[str, Any]
     ) -> PostMetrics:
+        api, _ = _graph_for(account_metadata)
         response = self.http.get(
-            f"{GRAPH_API}/{external_post_id}",
+            f"{api}/{external_post_id}",
             params={"fields": "like_count,comments_count,permalink"},
             headers=self._auth_headers(access_token),
             timeout=DEFAULT_HTTP_TIMEOUT,
@@ -300,7 +381,7 @@ class InstagramProvider(SocialProvider):
 
         for metric_set in INSIGHT_METRIC_SETS:
             insight_response = self.http.get(
-                f"{GRAPH_API}/{external_post_id}/insights",
+                f"{api}/{external_post_id}/insights",
                 params={"metric": metric_set},
                 headers=self._auth_headers(access_token),
                 timeout=DEFAULT_HTTP_TIMEOUT,
@@ -340,6 +421,13 @@ class InstagramProvider(SocialProvider):
             )
         retryable = response.status_code >= 500 or "(4)" in message or "(17)" in message or "(32)" in message
         raise SocialProviderError(f"Failed to {action}: {message}", retryable=retryable)
+
+
+def _graph_for(account_metadata: Dict[str, Any]) -> Tuple[str, str]:
+    """API base and media owner path for an account's login type."""
+    if (account_metadata or {}).get("login") == SYSTEM_USER_LOGIN:
+        return FACEBOOK_GRAPH_API, str(account_metadata["ig_user_id"])
+    return GRAPH_API, "me"
 
 
 def _to_int(value: Any) -> Optional[int]:

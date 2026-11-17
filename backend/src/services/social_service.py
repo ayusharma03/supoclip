@@ -17,6 +17,7 @@ import logging
 import re
 import secrets
 import unicodedata
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -245,6 +246,19 @@ class SocialService:
     ) -> Dict[str, Any]:
         provider = self._provider(provider_name)
         await self._ensure_not_paused(provider_name, user_id)
+        if getattr(provider, "uses_system_user", False):
+            # The server token already names the account: link it and go straight back.
+            try:
+                tokens, profile = await self._call_provider(provider.connect_system_user)
+            except SocialProviderError as exc:
+                raise SocialValidationError(str(exc)) from exc
+            account = await self._save_account(user_id, provider, tokens, profile)
+            query = urlencode({"connected": provider.name, "account": account.get("username") or ""})
+            return {
+                "provider": provider.name,
+                "authorize_url": f"{self.config.app_base_url}/settings/social?{query}",
+                "state": None,
+            }
         state = secrets.token_urlsafe(32)
         if client in MOBILE_CLIENTS:
             state = MOBILE_STATE_PREFIX + state
@@ -295,7 +309,9 @@ class SocialService:
             profile = await self._call_provider(provider.fetch_profile, tokens.access_token)
         except SocialProviderError as exc:
             raise SocialValidationError(str(exc)) from exc
+        return await self._save_account(user_id, provider, tokens, profile)
 
+    async def _save_account(self, user_id: str, provider, tokens, profile) -> Dict[str, Any]:
         account = await self.repo.upsert_account(
             self.db,
             user_id=user_id,
