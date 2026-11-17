@@ -7,6 +7,7 @@ from typing import Optional
 from pathlib import Path
 import assemblyai as aai
 from ..config import get_config
+import gc
 import httpx
 import json
 import re
@@ -186,6 +187,18 @@ def _get_whisper_model(model_name: str = "base"):
     return _WHISPER_MODEL_CACHE[model_name]
 
 
+def _release_whisper_model(model_name: str) -> None:
+    """Drop a cached Whisper model and return its CUDA memory to the driver."""
+    _WHISPER_MODEL_CACHE.pop(model_name, None)
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def transcribe_with_whisper(
     video_path: Path, model_name: str = "base", language: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -202,7 +215,14 @@ def transcribe_with_whisper(
         model_name,
         whisper_language or "auto",
     )
-    return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
+    on_gpu = getattr(getattr(model, "device", None), "type", None) == "cuda"
+    try:
+        return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
+    finally:
+        # A held GPU model starves the next step's local LLM (e.g. Ollama) of VRAM.
+        if on_gpu:
+            del model
+            _release_whisper_model(model_name)
 
 
 def _whisper_result_to_transcript_data(whisper_result: Dict[str, Any]) -> Dict[str, Any]:
