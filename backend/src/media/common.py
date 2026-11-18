@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 
 TRANSCRIPT_CACHE_SCHEMA_VERSION = 2
 
-VALID_OUTPUT_FORMATS = {"vertical", "vertical_fit", "vertical_pan", "vertical_split", "original"}
+# gameplay_facecam: streamer webcam stacked over gameplay (media/gameplay_layout.py).
+VALID_OUTPUT_FORMATS = {"vertical", "vertical_fit", "vertical_pan", "vertical_split", "gameplay_facecam", "original"}
 
 EMOJI_FONT_NAME = "Noto Color Emoji"
 

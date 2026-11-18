@@ -1848,6 +1848,10 @@ def render_reframed_clip_ffmpeg(
     # for a well-framed closeup, blurred full-frame fit for content shots.
     if output_format == "vertical_fit":
         video_filter, mode = build_full_frame_filter(), "complex"
+    elif output_format == "gameplay_facecam":
+        from .gameplay_layout import gameplay_facecam_plan
+
+        video_filter, mode = gameplay_facecam_plan(input_path, width, height)
     elif vertical_plan is not None:
         video_filter, mode = vertical_plan
     else:
@@ -1893,6 +1897,11 @@ def caption_probe_plan(input_path: Path, output_format: str, vertical_plan=None)
     """The same composition as the final render, without subtitles or stock footage."""
     if output_format == "vertical_fit":
         return build_full_frame_filter(), "complex"
+    if output_format == "gameplay_facecam":
+        from .gameplay_layout import gameplay_facecam_plan
+
+        width, height = ffprobe_video_size(input_path)
+        return gameplay_facecam_plan(input_path, width, height)
     if output_format in {"vertical_split", "vertical_pan"}:
         plan = detect_speaker_reframe_plan(input_path, output_format)
         if plan and plan["mode"] == "split":

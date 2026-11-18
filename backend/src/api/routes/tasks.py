@@ -24,6 +24,7 @@ import hashlib
 import time
 from ...utils.async_helpers import run_in_thread
 from ... import clip_archive
+from ...presets import UnknownPreset, apply_preset, list_presets
 
 from ...repositories.generation_allowance_guard import generation_allowance_guard, GenerationAllowanceBusy
 from ...repositories.task_run_guard import task_run_guard, TaskRunBusy
@@ -639,6 +640,10 @@ async def create_task(request: Request, db: AsyncSession = Depends(get_db)):
 
 async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttempt):
     data = await _read_json_object(request)
+    try:
+        data = apply_preset(data)
+    except UnknownPreset as exc:
+        raise HTTPException(status_code=422, detail={"code": "UNKNOWN_PRESET", "message": str(exc)}) from None
 
     raw_source = data.get("source")
     if isinstance(raw_source, dict):
@@ -950,6 +955,13 @@ async def get_workflows(request: Request, db: AsyncSession = Depends(get_db)):
     """What the authenticated user can make on this platform, with each workflow's limits."""
     user_id = await _get_user_id_from_headers(request, db)
     return workflows_info(await allowed_workflows(db, user_id, platform=client_platform(request)))
+
+
+@router.get("/presets")
+async def get_presets(request: Request, db: AsyncSession = Depends(get_db)):
+    """Named defaults for ``POST /tasks/`` (``{"preset": "gta", ...}``)."""
+    await _get_user_id_from_headers(request, db)
+    return {"presets": list_presets()}
 
 
 @router.get("/shared/{share_token}")

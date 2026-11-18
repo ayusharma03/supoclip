@@ -72,3 +72,20 @@ Full episode on their YouTube channel.
 - The quote or claim in the description is actually said in the clip.
 - Subtitles read correctly (no garbled words); otherwise hold the clip.
 - Near-duplicate of an earlier clip (same point from another episode)? Post only the better one.
+
+## GTA clips (preset `gta`)
+
+Everything above applies, with these changes.
+
+- **Credit:** the streamer, with their channel and the exact stream link
+  (`🎮 Credit: <Streamer> (<channel>)` / `Full stream: <URL>`). Add each streamer as a row in the
+  credit table before posting their clips.
+- **Tone:** like a friend sending a clip in the group chat: short, playful, Hinglish
+  ("bhai police ne literally chhoda hi nahi 😂"). One emoji allowed here.
+- **Title:** what happens, not a quote: the chase, the fail, the reaction
+  (Good: "Police se bachne ke chakkar mein khud hi phas gaya". Bad: "GTA 5 funny moment #12").
+  Name the server or RP character only when the clip makes it obvious.
+- **Description:** 1 line setting up the moment, without giving away the ending.
+- **Hashtags:** 5–7: #gta5 or #gtarp, 1–2 about the moment (#police, #heist, #funny),
+  the streamer's tag, #gaming and #viralpods. Instagram adds #gtaindia.
+- **Check:** no slurs or abuse in the burned-in subtitles; hold clips where the payoff is off-screen.

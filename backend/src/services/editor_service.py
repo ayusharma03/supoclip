@@ -258,6 +258,9 @@ def editor_preserved_layout(
     )
 
     try:
+        if output_format == "gameplay_facecam":
+            # Re-detected on the editor source; the render falls back to a fit itself.
+            return {"kind": "stack", "output_format": "gameplay_facecam"}
         if output_format == "vertical_split":
             plan = detect_speaker_reframe_plan(clip_path, "vertical_split")
             if not plan or plan.get("mode") != "split":
@@ -827,7 +830,7 @@ async def prepare_editor(ctx, task_id: str, clip_id: str, filename: str):
             # vertical or original crop. Bake that frame into the editor
             # source so preview and export show it. Other clips keep this
             # uncropped trim and the crop chosen below.
-            if output_format in {"vertical", "vertical_split", "vertical_fit"}:
+            if output_format in {"vertical", "vertical_split", "vertical_fit", "gameplay_facecam"}:
                 from ..clip_source_map import load_clip_vertical_layout
 
                 await run_in_thread(
