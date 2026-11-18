@@ -441,6 +441,8 @@ def _get_transcript_with_whisper(video_path: Path, runtime_config) -> str:
     whisper_result = transcribe_with_whisper(
         video_path, model_name, runtime_config.transcription_language or None
     )
+    if runtime_config.hinglish_subtitles and whisper_result.get("language") == "hi":
+        _romanize_to_hinglish(whisper_result, runtime_config)
 
     formatted_lines = format_transcript_for_analysis(whisper_result)
     cache_transcript_data(video_path, whisper_result)
@@ -452,6 +454,19 @@ def _get_transcript_with_whisper(video_path: Path, runtime_config) -> str:
         len(result),
     )
     return result
+
+
+def _romanize_to_hinglish(whisper_result: Dict[str, Any], runtime_config) -> None:
+    from . import hinglish
+
+    lexicon_dir = Path(runtime_config.temp_dir)
+    lexicon = hinglish.load_lexicon(lexicon_dir)
+    started = time.monotonic()
+    hinglish.romanize_whisper_result(
+        whisper_result, lexicon, hinglish.llm_transliterator(runtime_config.hinglish_llm)
+    )
+    hinglish.save_lexicon(lexicon_dir, lexicon)
+    logger.info("Hinglish conversion took %.0fs", time.monotonic() - started)
 
 
 def _get_transcript_with_youtube_captions(source_url: str) -> str:

@@ -34,6 +34,9 @@ class Config:
         self.llm = self._get_runtime_setting("LLM") or self._infer_default_llm()
         # Optional separate model for the cross-window candidate rerank pass.
         self.rerank_llm = self._get_optional_env("RERANK_LLM") or self.llm
+        # Whisper Hindi transcripts become Roman Hinglish ("mera naam ... hai").
+        self.hinglish_subtitles = self._get_bool_env("HINGLISH_SUBTITLES", False)
+        self.hinglish_llm = self._get_optional_env("HINGLISH_LLM") or self.llm
         self.assembly_ai_api_key = self._get_runtime_setting("ASSEMBLY_AI_API_KEY")
         # An explicit deployment choice overrides the model for every processing mode.
         self.assembly_ai_speech_model = os.getenv("ASSEMBLY_AI_SPEECH_MODEL", "").strip()

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import json
 import os
 import random
 import re
@@ -149,7 +150,25 @@ class Api:
         return response.json()
 
 
-def load_podcasts(api: Api, task_ids: Sequence[str], providers: Sequence[str], per_podcast: int) -> List[Podcast]:
+def load_copy(path: Optional[str]) -> Dict[str, dict]:
+    """Hand-written copy per clip id: title, youtube, instagram, hashtags, skip."""
+    if not path:
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def post_text(clip: dict, podcast_title: str, provider: str, copy: dict, footer: str, hashtags: List[str]) -> dict:
+    return {
+        "title": copy.get("title") or clip.get("hook_title"),
+        "caption": copy.get(provider) or build_caption(clip, podcast_title, provider, footer),
+        "hashtags": copy.get("hashtags") or hashtags,
+    }
+
+
+def load_podcasts(
+    api: Api, task_ids: Sequence[str], providers: Sequence[str], per_podcast: int, skip: set = frozenset()
+) -> List[Podcast]:
     podcasts = []
     for task_id in task_ids:
         task = api.get(f"/tasks/{task_id}")
@@ -161,7 +180,7 @@ def load_podcasts(api: Api, task_ids: Sequence[str], providers: Sequence[str], p
         for post in posts:
             if post["status"] not in INACTIVE_POST_STATUSES:
                 used.setdefault(post["clip_id"], set()).add(post["provider"])
-        done = {clip_id for clip_id, provs in used.items() if set(providers) <= provs}
+        done = {clip_id for clip_id, provs in used.items() if set(providers) <= provs} | set(skip)
         clips = pick_clips(task.get("clips") or [], done, per_podcast)
         podcasts.append(Podcast(task_id, task.get("source_title") or task_id, clips, used))
     return podcasts
@@ -180,6 +199,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--hashtags", default=",".join(DEFAULT_HASHTAGS))
     parser.add_argument("--footer", default=DEFAULT_FOOTER)
     parser.add_argument("--seed", type=int, help="Repeat a previous shuffle")
+    parser.add_argument("--copy", help="JSON of hand-written copy per clip id (title/youtube/instagram/hashtags/skip)")
     parser.add_argument("--api-url", default=os.getenv("SCHEDULE_API_URL", "http://localhost:8000"))
     parser.add_argument("--apply", action="store_true", help="Create the posts (default is a dry run)")
     args = parser.parse_args(argv)
@@ -204,7 +224,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error(f"Not connected: {', '.join(missing) or 'no platforms'}")
 
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(10**6)
-    podcasts = load_podcasts(api, args.task, providers, args.per_podcast)
+    copy = load_copy(args.copy)
+    skipped = {clip_id for clip_id, entry in copy.items() if entry.get("skip")}
+    podcasts = load_podcasts(api, args.task, providers, args.per_podcast, skipped)
     plan = plan_schedule(podcasts, start=start, slots=slots, tz=tz, jitter_minutes=args.jitter, rng=random.Random(seed))
     if not plan:
         print("Nothing to schedule: every clip is already posted.")
@@ -214,19 +236,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"{'APPLY' if args.apply else 'DRY RUN'} seed={seed} -> {', '.join(providers)}")
     for item in plan:
         targets = [p for p in providers if p not in item.podcast.posted.get(item.clip["id"], set())]
+        title = copy.get(item.clip["id"], {}).get("title") or item.clip.get("hook_title") or ""
         print(f"{item.when:%a %d %b %H:%M}  {item.podcast.title[:28]:<28}  "
-              f"{item.clip.get('virality_score') or 0:>3}  {item.clip.get('hook_title') or ''}"
+              f"{item.clip.get('virality_score') or 0:>3}  {title}"
               f"  [{'+'.join(targets)}]")
         if not args.apply:
             continue
         for provider in targets:
+            text = post_text(item.clip, item.podcast.title, provider, copy.get(item.clip["id"], {}), args.footer, hashtags)
             api.post("/social/posts", {
                 "task_id": item.podcast.task_id,
                 "clip_id": item.clip["id"],
                 "social_account_id": accounts[provider]["id"],
-                "title": item.clip.get("hook_title"),
-                "caption": build_caption(item.clip, item.podcast.title, provider, args.footer),
-                "hashtags": hashtags,
+                **text,
                 "privacy_level": "public",
                 "scheduled_for": item.when.isoformat(),
             })

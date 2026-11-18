@@ -95,3 +95,24 @@ def test_instagram_caption_leads_with_hook_title():
     assert instagram.startswith("Decide once\n\n“")
     assert youtube.startswith("“Decide once what you want")
     assert "From: Some Podcast" in youtube and youtube.endswith("Footer")
+
+
+def test_hand_written_copy_overrides_generated_text_per_platform():
+    clip = {"id": "c1", "hook_title": "Hook", "text": "Some words here that make a sentence long enough."}
+    copy = {"title": "Better title", "youtube": "YT description", "hashtags": ["career"]}
+
+    youtube = bs.post_text(clip, "Pod", "youtube", copy, "Footer", ["podcast"])
+    instagram = bs.post_text(clip, "Pod", "instagram", copy, "Footer", ["podcast"])
+    plain = bs.post_text(clip, "Pod", "youtube", {}, "Footer", ["podcast"])
+
+    assert youtube == {"title": "Better title", "caption": "YT description", "hashtags": ["career"]}
+    assert instagram["caption"].startswith("Hook\n\n")
+    assert plain["title"] == "Hook" and plain["hashtags"] == ["podcast"]
+
+
+def test_load_copy_reads_json(tmp_path):
+    path = tmp_path / "copy.json"
+    path.write_text('{"c1": {"skip": true}}', encoding="utf-8")
+
+    assert bs.load_copy(str(path)) == {"c1": {"skip": True}}
+    assert bs.load_copy(None) == {}
