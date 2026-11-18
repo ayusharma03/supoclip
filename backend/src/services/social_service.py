@@ -802,6 +802,14 @@ class SocialService:
         try:
             file_path, public_url = await self._resolve_publish_media(post, provider)
             access_token = await self._get_valid_access_token(account)
+            scheduled_for = _parse_datetime(post.get("scheduled_for"))
+            publish_at = (
+                scheduled_for
+                if provider.native_scheduling
+                and scheduled_for
+                and scheduled_for > datetime.now(timezone.utc)
+                else None
+            )
             request = PublishRequest(
                 file_path=file_path,
                 title=post.get("title") or "",
@@ -810,6 +818,7 @@ class SocialService:
                 privacy_level=post.get("privacy_level") or "public",
                 public_media_url=public_url,
                 account_metadata=dict(account.get("metadata") or {}),
+                publish_at=publish_at,
             )
             result = await self._call_provider(provider.publish, access_token, request)
         except SocialProviderError as exc:
@@ -830,7 +839,10 @@ class SocialService:
             )
 
         if not result.pending_handle:
-            await self._mark_published(post, account, result.external_post_id, result.external_url)
+            await self._mark_published(
+                post, account, result.external_post_id, result.external_url,
+                published_at=publish_at,
+            )
         else:
             await self.repo.update_post(
                 self.db,
@@ -852,7 +864,9 @@ class SocialService:
         account: Dict[str, Any],
         external_post_id: Optional[str],
         external_url: Optional[str],
+        published_at: Optional[datetime] = None,
     ) -> None:
+        """``published_at`` is the platform's own go-live time for an early upload."""
         url = external_url or (
             _fallback_post_url(post["provider"], account, external_post_id)
             if external_post_id else None
@@ -865,7 +879,7 @@ class SocialService:
             external_url=url,
             pending_handle=None,
             error_message=None,
-            published_at=datetime.now(timezone.utc),
+            published_at=published_at or datetime.now(timezone.utc),
             media_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         logger.info("Published post %s to %s: %s", post["id"], post["provider"], url)
@@ -991,8 +1005,23 @@ class SocialService:
             logger.warning("Social post %s lost its worker mid-upload; marked failed", post_id)
         return post_ids
 
+    def _native_scheduling_providers(self) -> List[str]:
+        names = []
+        for name in self.config.social_publishing_providers:
+            try:
+                if get_provider(name, self.config).native_scheduling:
+                    names.append(name)
+            except Exception:  # noqa: BLE001 - an unknown provider just isn't early
+                continue
+        return names
+
     async def dispatch_scheduled_posts(self, limit: int = 50) -> List[str]:
-        post_ids = await self.repo.claim_due_scheduled_posts(self.db, limit=limit)
+        post_ids = await self.repo.claim_due_scheduled_posts(
+            self.db,
+            limit=limit,
+            early_providers=self._native_scheduling_providers(),
+            early_seconds=int(self.config.social_native_schedule_lead_hours * 3600),
+        )
         for post_id in post_ids:
             try:
                 # Scheduled posts have never been claimed (attempt 0).

@@ -168,6 +168,47 @@ def test_youtube_publish_uses_resumable_upload(clip_file):
     assert init_call[2]["headers"]["X-Upload-Content-Length"] == "1024"
 
 
+def _youtube_publish_body(clip_file, privacy_level, publish_at):
+    from src.social.base import PublishRequest
+
+    session = FakeSession(
+        {
+            ("POST", "upload/youtube/v3/videos"): FakeResponse(
+                200, {}, headers={"Location": "https://upload.example/session"}
+            ),
+            ("PUT", "upload.example/session"): FakeResponse(200, {"id": "vid123"}),
+        }
+    )
+    YouTubeProvider(_config(), session=session).publish(
+        "token",
+        PublishRequest(
+            file_path=clip_file, title="t", caption="c", hashtags=[],
+            privacy_level=privacy_level, publish_at=publish_at,
+        ),
+    )
+    return session.calls[0][2]["json"]["status"]
+
+
+def test_youtube_publish_at_uploads_private_with_publish_time(clip_file):
+    from datetime import datetime, timedelta, timezone
+
+    when = (datetime.now(timezone.utc) + timedelta(hours=5)).replace(microsecond=0)
+    status = _youtube_publish_body(clip_file, "public", when)
+    assert status["privacyStatus"] == "private"
+    assert status["publishAt"] == when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_youtube_publish_at_too_soon_or_not_public_is_ignored(clip_file):
+    from datetime import datetime, timedelta, timezone
+
+    soon = datetime.now(timezone.utc) + timedelta(minutes=2)
+    assert _youtube_publish_body(clip_file, "public", soon) == {
+        "privacyStatus": "public", "selfDeclaredMadeForKids": False,
+    }
+    later = datetime.now(timezone.utc) + timedelta(hours=5)
+    assert "publishAt" not in _youtube_publish_body(clip_file, "unlisted", later)
+
+
 def test_youtube_metrics_and_reauth_detection():
     session = FakeSession(
         {

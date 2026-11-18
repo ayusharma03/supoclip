@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -782,9 +782,17 @@ class SocialRepository:
 
     @staticmethod
     async def claim_due_scheduled_posts(
-        db: AsyncSession, limit: int = 50
+        db: AsyncSession,
+        limit: int = 50,
+        *,
+        early_providers: Sequence[str] = (),
+        early_seconds: int = 0,
     ) -> List[str]:
-        """Atomically move due scheduled posts to ``queued`` and return their ids."""
+        """Atomically move due scheduled posts to ``queued`` and return their ids.
+
+        Posts for ``early_providers`` (platforms that publish at the scheduled
+        time themselves) are claimed up to ``early_seconds`` ahead.
+        """
         result = await db.execute(
             text(
                 """
@@ -794,7 +802,13 @@ class SocialRepository:
                     SELECT id FROM social_posts
                     WHERE status = 'scheduled'
                       AND scheduled_for IS NOT NULL
-                      AND scheduled_for <= NOW()
+                      AND (
+                        scheduled_for <= NOW()
+                        OR (
+                          provider = ANY(:early_providers)
+                          AND scheduled_for <= NOW() + make_interval(secs => CAST(:early_seconds AS integer))
+                        )
+                      )
                     ORDER BY scheduled_for ASC
                     LIMIT :limit
                     FOR UPDATE SKIP LOCKED
@@ -802,7 +816,11 @@ class SocialRepository:
                 RETURNING id
                 """
             ),
-            {"limit": limit},
+            {
+                "limit": limit,
+                "early_providers": list(early_providers),
+                "early_seconds": int(early_seconds),
+            },
         )
         ids = [row.id for row in result.fetchall()]
         await db.commit()

@@ -756,6 +756,28 @@ async def test_publish_post_marks_published_with_fallback_url(service, provider)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native", [True, False])
+async def test_early_upload_hands_the_schedule_to_native_platforms(service, provider, native):
+    provider.native_scheduling = native
+    account = await _connect(service)
+    when = (datetime.now(timezone.utc) + timedelta(hours=6)).replace(microsecond=0)
+    post = await service.create_post(
+        "user-1", task_id="task-1", clip_id="clip-1", social_account_id=account["id"],
+        title="t", caption="c", hashtags=None, privacy_level="public",
+        scheduled_for=when.isoformat(),
+    )
+    await service.repo.update_post(None, post["id"], status="queued")
+
+    published = await service.publish_post(post["id"])
+
+    _, request = provider.publish_calls[0]
+    assert request.publish_at == (when if native else None)
+    assert published["status"] == "published"
+    if native:
+        assert published["published_at"] == when
+
+
+@pytest.mark.asyncio
 async def test_publish_post_sends_a_product_event_without_post_text(service, provider, monkeypatch):
     events = []
     monkeypatch.setattr(

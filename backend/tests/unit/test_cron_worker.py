@@ -66,3 +66,33 @@ async def test_a_pending_cron_id_is_not_enqueued_twice():
         await redis.delete(job_key_prefix + job_id)
         await redis.zrem(CRON_QUEUE_NAME, job_id)
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_cron_run_cut_off_by_a_restart_does_not_block_the_next_tick():
+    """arq fails an interrupted job with the worker's keep_result, not the cron's."""
+    from arq.constants import result_key_prefix
+    from arq.worker import Worker
+
+    redis = await create_pool(RedisSettings(
+        host=os.getenv("REDIS_HOST", "127.0.0.1"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+    ))
+    queue = "supoclip_cron_restart_probe"
+    job_id = "cron:restart_probe"
+    worker = Worker(
+        functions=CronWorkerSettings.functions,
+        cron_jobs=CronWorkerSettings.cron_jobs,
+        queue_name=queue,
+        redis_pool=redis,
+        keep_result=CronWorkerSettings.keep_result,
+    )
+    try:
+        # What the worker does with a job whose run was interrupted.
+        await worker.finish_failed_job(job_id, b"max 1 retries exceeded")
+        assert await redis.exists(result_key_prefix + job_id) == 0
+        assert await redis.enqueue_job("cleanup_media", _job_id=job_id, _queue_name=queue) is not None
+    finally:
+        await redis.delete(job_key_prefix + job_id, result_key_prefix + job_id)
+        await redis.zrem(queue, job_id)
+        await redis.aclose()

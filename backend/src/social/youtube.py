@@ -55,6 +55,8 @@ class YouTubeProvider(SocialProvider):
     name = "youtube"
     display_name = "YouTube Shorts"
 
+    native_scheduling = True
+
     def __init__(self, config: Optional[Config] = None, session=None):
         super().__init__(session)
         self.config = config or get_config()
@@ -187,6 +189,7 @@ class YouTubeProvider(SocialProvider):
     # -- publishing -----------------------------------------------------
     def publish(self, access_token: str, request: PublishRequest) -> PublishResult:
         privacy = PRIVACY_MAP.get(request.privacy_level, "private")
+        publish_at = _future_publish_at(request.publish_at) if privacy == "public" else None
         title = (request.title or "").strip()[:TITLE_MAX_LENGTH] or "Untitled clip"
         hashtags = list(request.hashtags)
         if not any(tag.lower().lstrip("#") == "shorts" for tag in hashtags):
@@ -203,8 +206,10 @@ class YouTubeProvider(SocialProvider):
                 "categoryId": "22",
             },
             "status": {
-                "privacyStatus": privacy,
+                # YouTube makes a private video with publishAt public at that time.
+                "privacyStatus": "private" if publish_at else privacy,
                 "selfDeclaredMadeForKids": False,
+                **({"publishAt": publish_at} if publish_at else {}),
             },
         }
         init_response = self.http.post(
@@ -295,6 +300,21 @@ class YouTubeProvider(SocialProvider):
         raise SocialProviderError(
             f"Failed to {action}: {message}", retryable=retryable
         )
+
+
+# YouTube rejects a publishAt that is in the past; leave margin for the upload.
+PUBLISH_AT_MIN_LEAD = timedelta(minutes=15)
+
+
+def _future_publish_at(when: Optional[datetime]) -> Optional[str]:
+    """RFC 3339 UTC time for ``publishAt``, or None when it is not far enough ahead."""
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if when < datetime.now(timezone.utc) + PUBLISH_AT_MIN_LEAD:
+        return None
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _to_int(value: Any) -> Optional[int]:

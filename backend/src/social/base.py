@@ -103,6 +103,9 @@ class PublishRequest:
     # pulls the video instead of accepting an upload.
     public_media_url: Optional[str] = None
     account_metadata: Dict[str, Any] = field(default_factory=dict)
+    # Future time the platform itself should make the post public
+    # (providers with ``native_scheduling``). None publishes as requested now.
+    publish_at: Optional[datetime] = None
 
 
 @dataclass
@@ -151,6 +154,9 @@ class SocialProvider(ABC):
     # False for platforms that fetch ``PublishRequest.public_media_url``
     # themselves instead of receiving an upload (Instagram).
     needs_local_file: bool = True
+    # True when the platform can hold an upload and publish it at a set time
+    # itself (YouTube ``publishAt``), so a scheduled post can be uploaded early.
+    native_scheduling: bool = False
 
     def __init__(self, session: Optional[requests.Session] = None):
         self.http = session or requests.Session()

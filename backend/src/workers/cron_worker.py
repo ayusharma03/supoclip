@@ -58,6 +58,12 @@ class CronWorkerSettings:
     )
     max_jobs = 4
     max_tries = 1
+    # Keep no results. Each cron reuses one job id (``scheduled``), and arq skips
+    # enqueueing while that id has a stored result. A run cut off by a restart is
+    # failed with "max retries exceeded" and stored for the *worker's*
+    # keep_result (3600s by default, ignoring the cron's own 0), which stopped
+    # that cron, e.g. scheduled social posts, for up to an hour.
+    keep_result = 0
     job_timeout = 3600
     health_check_interval = 30
     cron_jobs = [
