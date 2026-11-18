@@ -65,3 +65,13 @@ def test_merged_upload_records_count_against_the_budget(tmp_path, monkeypatch):
     queue = []
     assert poster.merge_incoming(queue) == 10
     assert ids(poster.pick(queue, AT)) == ["youtube-0"]
+
+
+def test_each_account_has_its_own_youtube_budget_and_instagram_gap():
+    recent = (AT - timedelta(hours=2)).isoformat()
+    queue = [dict(post(9, "youtube", -30), status="published", uploaded_at=recent)] * 5  # viralpods used up
+    queue += [post(i, "youtube", 10 + i) for i in range(2)]
+    queue += [dict(post(10 + i, "youtube", 10 + i), account="lossantosbhai") for i in range(2)]
+    queue += [dict(post(20, "instagram", -1), status="published", uploaded_at=(AT - timedelta(minutes=1)).isoformat()),
+              post(21, "instagram", -1), dict(post(22, "instagram", -1), account="lossantosbhai")]
+    assert sorted(ids(poster.pick(queue, AT))) == ["instagram-22", "youtube-10", "youtube-11"]

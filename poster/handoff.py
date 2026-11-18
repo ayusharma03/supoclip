@@ -82,6 +82,7 @@ def main() -> int:
     parser.add_argument("--host", required=True, help="user@host of the poster machine")
     parser.add_argument("--key", default=str(Path.home() / ".ssh" / "homelab_ed25519"))
     parser.add_argument("--remote-data", default=DEFAULT_REMOTE_DATA, help="POSTER_DATA_DIR on the poster machine")
+    parser.add_argument("--account", default="viralpods", help="poster account the posts belong to (POSTER_ACCOUNTS)")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     REMOTE_DATA = args.remote_data
@@ -114,9 +115,10 @@ def main() -> int:
             for name, path in files.items():
                 run(scp + [str(path), f"{args.host}:{REMOTE_DATA}/media/{name}"])
             batch = [
-                {k: post[k] for k in ("id", "provider", "title", "caption", "hashtags", "privacy_level", "scheduled_for", "file")}
+                {**{k: post[k] for k in ("id", "provider", "title", "caption", "hashtags", "privacy_level", "scheduled_for", "file")},
+                 "account": args.account}
                 for post in posts
-            ] + recent_youtube_uploads()
+            ] + [dict(record, account=args.account) for record in recent_youtube_uploads()]
             batch_path = staging / "batch.json"
             batch_path.write_text(json.dumps(batch, ensure_ascii=False, indent=1), encoding="utf-8")
             remote_tmp = f"{REMOTE_DATA}/incoming/.batch-{os.getpid()}.tmp"

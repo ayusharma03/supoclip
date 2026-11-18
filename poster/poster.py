@@ -95,28 +95,60 @@ def merge_incoming(queue: List[Dict[str, Any]]) -> int:
     return added
 
 
-class Accounts:
-    """Access tokens for each platform, refreshed when needed."""
+DEFAULT_ACCOUNT = "viralpods"
 
-    def __init__(self, config: Config):
+
+def account_prefixes() -> Dict[str, str]:
+    """``POSTER_ACCOUNTS="viralpods=,lossantosbhai=LSB_"``: account -> env var prefix."""
+    raw = os.getenv("POSTER_ACCOUNTS", f"{DEFAULT_ACCOUNT}=")
+    pairs = (item.split("=", 1) for item in raw.split(",") if item.strip())
+    return {name.strip(): prefix.strip() for name, prefix in pairs}
+
+
+class Account:
+    """One brand: its YouTube channel (own Google Cloud project) and Instagram account.
+
+    Env vars are the plain names (YOUTUBE_REFRESH_TOKEN, INSTAGRAM_ACCOUNT_ID, ...)
+    with the account's prefix; a platform without its vars is not set up.
+    """
+
+    def __init__(self, name: str, prefix: str):
+        self.name, self.prefix = name, prefix
+        config = Config()
+        config.youtube_oauth_client_id = self.env("YOUTUBE_OAUTH_CLIENT_ID") or ""
+        config.youtube_oauth_client_secret = self.env("YOUTUBE_OAUTH_CLIENT_SECRET") or ""
         self.youtube = YouTubeProvider(config)
         self.instagram = InstagramProvider(config)
         self._yt_token: Optional[str] = None
         self._yt_expires = now()
 
+    def env(self, key: str) -> Optional[str]:
+        return os.getenv(self.prefix + key) or None
+
+    def has(self, provider: str) -> bool:
+        keys = ("YOUTUBE_REFRESH_TOKEN",) if provider == "youtube" else ("INSTAGRAM_SYSTEM_USER_TOKEN", "INSTAGRAM_ACCOUNT_ID")
+        return all(self.env(key) for key in keys)
+
     def youtube_token(self) -> str:
         if not self._yt_token or self._yt_expires - now() < timedelta(minutes=5):
-            tokens = self.youtube.refresh_tokens(os.environ["YOUTUBE_REFRESH_TOKEN"])
+            tokens = self.youtube.refresh_tokens(self.env("YOUTUBE_REFRESH_TOKEN"))
             self._yt_token = tokens.access_token
             self._yt_expires = tokens.expires_at or now() + timedelta(minutes=50)
         return self._yt_token
 
     def instagram_token(self) -> str:
-        return os.environ["INSTAGRAM_SYSTEM_USER_TOKEN"]
+        return self.env("INSTAGRAM_SYSTEM_USER_TOKEN")
 
-    @staticmethod
-    def instagram_metadata() -> Dict[str, Any]:
-        return {"login": SYSTEM_USER_LOGIN, "ig_user_id": os.environ["INSTAGRAM_ACCOUNT_ID"]}
+    def instagram_metadata(self) -> Dict[str, Any]:
+        return {"login": SYSTEM_USER_LOGIN, "ig_user_id": self.env("INSTAGRAM_ACCOUNT_ID")}
+
+
+class Accounts(dict):
+    def __init__(self):
+        super().__init__({name: Account(name, prefix) for name, prefix in account_prefixes().items()})
+
+    def of(self, post: Dict[str, Any]) -> Account:
+        return self[post.get("account") or DEFAULT_ACCOUNT]
 
 
 def ready(post: Dict[str, Any], at: datetime) -> bool:
@@ -124,43 +156,52 @@ def ready(post: Dict[str, Any], at: datetime) -> bool:
     return post["status"] == PENDING and (retry is None or retry <= at)
 
 
+def account_of(post: Dict[str, Any]) -> str:
+    return post.get("account") or DEFAULT_ACCOUNT
+
+
 def pick(queue: List[Dict[str, Any]], at: datetime) -> List[Dict[str, Any]]:
-    """Posts to publish in this tick, in order."""
+    """Posts to publish in this tick, in order. Budgets and gaps are per account:
+    each YouTube channel has its own Google Cloud project and quota."""
     chosen: List[Dict[str, Any]] = []
-
-    youtube = sorted(
-        (p for p in queue if p["provider"] == "youtube" and ready(p, at)),
-        key=lambda p: p["scheduled_for"],
-    )
     day_ago = at - timedelta(hours=24)
-    used = sum(
-        1 for p in queue
-        if p["provider"] == "youtube" and p.get("uploaded_at") and parse(p["uploaded_at"]) > day_ago
-    )
-    # Due posts always go; early ones only within the rolling 24h budget.
-    due = [p for p in youtube if parse(p["scheduled_for"]) <= at]
-    early = [p for p in youtube if at < parse(p["scheduled_for"]) <= at + YOUTUBE_LEAD]
-    chosen.extend(due + early[: max(0, YOUTUBE_DAILY_UPLOADS - used - len(due))])
+    for account in sorted({account_of(p) for p in queue}):
+        mine = [p for p in queue if account_of(p) == account]
 
-    last_ig = max(
-        (parse(p.get("uploaded_at")) for p in queue if p["provider"] == "instagram" and p.get("uploaded_at")),
-        default=None,
-    )
-    if last_ig is None or at - last_ig >= INSTAGRAM_MIN_GAP:
-        due_ig = sorted(
-            (p for p in queue if p["provider"] == "instagram" and ready(p, at) and parse(p["scheduled_for"]) <= at),
-            key=lambda p: p["scheduled_for"],
+        youtube = sorted((p for p in mine if p["provider"] == "youtube" and ready(p, at)), key=lambda p: p["scheduled_for"])
+        used = sum(
+            1 for p in mine
+            if p["provider"] == "youtube" and p.get("uploaded_at") and parse(p["uploaded_at"]) > day_ago
         )
-        chosen.extend(due_ig[:1])
+        # Due posts always go; early ones only within the rolling 24h budget.
+        due = [p for p in youtube if parse(p["scheduled_for"]) <= at]
+        early = [p for p in youtube if at < parse(p["scheduled_for"]) <= at + YOUTUBE_LEAD]
+        chosen.extend(due + early[: max(0, YOUTUBE_DAILY_UPLOADS - used - len(due))])
+
+        last_ig = max(
+            (parse(p["uploaded_at"]) for p in mine if p["provider"] == "instagram" and p.get("uploaded_at")),
+            default=None,
+        )
+        if last_ig is None or at - last_ig >= INSTAGRAM_MIN_GAP:
+            due_ig = sorted(
+                (p for p in mine if p["provider"] == "instagram" and ready(p, at) and parse(p["scheduled_for"]) <= at),
+                key=lambda p: p["scheduled_for"],
+            )
+            chosen.extend(due_ig[:1])
     return chosen
 
 
 def publish(post: Dict[str, Any], accounts: Accounts, at: datetime) -> None:
     scheduled = parse(post["scheduled_for"])
+    account = accounts.of(post)
+    if not account.has(post["provider"]):
+        post.update(status=FAILED, error=f"{account.name} has no {post['provider']} login on this poster")
+        log.warning("%s %s: %s", post["provider"], post["id"], post["error"])
+        return
     if post["provider"] == "youtube":
-        provider, token, metadata = accounts.youtube, accounts.youtube_token(), {}
+        provider, token, metadata = account.youtube, account.youtube_token(), {}
     else:
-        provider, token, metadata = accounts.instagram, accounts.instagram_token(), accounts.instagram_metadata()
+        provider, token, metadata = account.instagram, account.instagram_token(), account.instagram_metadata()
     request = PublishRequest(
         file_path=str(MEDIA / post["file"]),
         title=post.get("title") or "",
@@ -192,7 +233,7 @@ def publish(post: Dict[str, Any], accounts: Accounts, at: datetime) -> None:
         retry_at=None,
     )
     live = "goes public " + post["scheduled_for"] if request.publish_at else "live now"
-    log.info("%s %s: %s (%s)", post["provider"], post.get("title"), result.external_url, live)
+    log.info("%s/%s %s: %s (%s)", account.name, post["provider"], post.get("title"), result.external_url, live)
 
 
 def tick(accounts: Accounts) -> None:
@@ -215,24 +256,26 @@ def tick(accounts: Accounts) -> None:
 def status() -> None:
     for post in sorted(load_queue(), key=lambda p: p["scheduled_for"]):
         when = parse(post["scheduled_for"]).astimezone(timezone(timedelta(hours=5, minutes=30)))
-        print(f"{when:%d %b %H:%M}  {post['provider']:<9} {post['status']:<9} {(post.get('title') or '')[:50]}"
+        print(f"{when:%d %b %H:%M}  {account_of(post):<14} {post['provider']:<9} {post['status']:<9} {(post.get('title') or '')[:50]}"
               + (f"  ! {post['error'][:60]}" if post.get("error") and post["status"] != PUBLISHED else ""))
 
 
 def check() -> None:
-    """Prove both logins work without posting anything."""
-    accounts = Accounts(Config())
-    accounts.youtube_token()
-    print("YouTube: token refreshed")
-    meta = accounts.instagram_metadata()
-    response = accounts.instagram.http.get(
-        f"{FACEBOOK_GRAPH_API}/{meta['ig_user_id']}",
-        params={"fields": "username"},
-        headers={"Authorization": f"Bearer {accounts.instagram_token()}"},
-        timeout=30,
-    )
-    response.raise_for_status()
-    print("Instagram: @" + response.json().get("username", "?"))
+    """Prove every configured login works without posting anything."""
+    for account in Accounts().values():
+        if account.has("youtube"):
+            account.youtube_token()
+            print(f"{account.name} YouTube: token refreshed")
+        if account.has("instagram"):
+            meta = account.instagram_metadata()
+            response = account.instagram.http.get(
+                f"{FACEBOOK_GRAPH_API}/{meta['ig_user_id']}",
+                params={"fields": "username"},
+                headers={"Authorization": f"Bearer {account.instagram_token()}"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            print(f"{account.name} Instagram: @" + response.json().get("username", "?"))
 
 
 def main() -> None:
@@ -245,7 +288,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for directory in (INCOMING, MEDIA):
         directory.mkdir(parents=True, exist_ok=True)
-    accounts = Accounts(Config())
+    accounts = Accounts()
     log.info("Poster running: YouTube %d/day up to %s ahead, Instagram gap %s",
              YOUTUBE_DAILY_UPLOADS, YOUTUBE_LEAD, INSTAGRAM_MIN_GAP)
     while True:
