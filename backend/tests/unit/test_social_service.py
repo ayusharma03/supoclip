@@ -1656,3 +1656,26 @@ async def test_queued_tiktok_post_fails_readably_while_paused(service, tiktok_fl
     assert result["error_message"] == social_module.TIKTOK_PAUSED_MESSAGE
     # The worker has no platform: it asked about both before refusing.
     assert {platform for _, platform, _ in tiktok_flag["checks"][-2:]} == {"web", "ios"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native,used,budget", [(True, 0, 5), (True, 3, 2), (True, 9, 0), (False, 0, None)])
+async def test_early_uploads_share_a_daily_budget(service, provider, native, used, budget):
+    provider.native_scheduling = native
+    service.config.social_publishing_providers = frozenset({"youtube"})
+    service.config.social_native_schedule_daily_uploads = 5
+    calls = {}
+
+    async def count_recent_claims(db, name, seconds):
+        assert (name, seconds) == ("youtube", 24 * 3600)
+        return used
+
+    async def claim_due_scheduled_posts(db, limit=50, *, early_budgets=None, early_seconds=0):
+        calls.update(early_budgets=early_budgets, early_seconds=early_seconds)
+        return []
+
+    service.repo.count_recent_claims = count_recent_claims
+    service.repo.claim_due_scheduled_posts = claim_due_scheduled_posts
+    await service.dispatch_scheduled_posts()
+    assert calls["early_budgets"] == ({} if budget is None else {"youtube": budget})
+    assert calls["early_seconds"] == int(service.config.social_native_schedule_lead_hours * 3600)

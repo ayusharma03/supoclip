@@ -293,11 +293,15 @@ class Config:
             os.getenv("SOCIAL_PERFORMANCE_MIN_POSTS", "3")
         )
         # Platforms that publish at a set time themselves (YouTube publishAt)
-        # get scheduled posts uploaded this many hours early, so they go live
-        # on time even if this server is down then. Bounded to stay inside
-        # YouTube's daily upload quota (~6 uploads/day by default).
+        # get scheduled posts uploaded up to this many hours early, so they go
+        # live on time even if this server is down then. At most
+        # SOCIAL_NATIVE_SCHEDULE_DAILY_UPLOADS uploads (due ones included) per
+        # rolling 24h, inside YouTube's quota of ~6 uploads a day.
         self.social_native_schedule_lead_hours = float(
-            os.getenv("SOCIAL_NATIVE_SCHEDULE_LEAD_HOURS", "24")
+            os.getenv("SOCIAL_NATIVE_SCHEDULE_LEAD_HOURS", "720")
+        )
+        self.social_native_schedule_daily_uploads = max(
+            0, self._get_int_env("SOCIAL_NATIVE_SCHEDULE_DAILY_UPLOADS", 5)
         )
         self.social_publish_max_attempts = int(
             os.getenv("SOCIAL_PUBLISH_MAX_ATTEMPTS", "3")

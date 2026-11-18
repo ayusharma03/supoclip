@@ -1016,10 +1016,17 @@ class SocialService:
         return names
 
     async def dispatch_scheduled_posts(self, limit: int = 50) -> List[str]:
+        # Early uploads share the platform's daily API quota (YouTube: ~6
+        # uploads a day), so each platform gets a rolling 24h budget.
+        cap = self.config.social_native_schedule_daily_uploads
+        early_budgets = {}
+        for provider in self._native_scheduling_providers():
+            used = await self.repo.count_recent_claims(self.db, provider, 24 * 3600)
+            early_budgets[provider] = max(0, cap - used)
         post_ids = await self.repo.claim_due_scheduled_posts(
             self.db,
             limit=limit,
-            early_providers=self._native_scheduling_providers(),
+            early_budgets=early_budgets,
             early_seconds=int(self.config.social_native_schedule_lead_hours * 3600),
         )
         for post_id in post_ids:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -785,15 +785,17 @@ class SocialRepository:
         db: AsyncSession,
         limit: int = 50,
         *,
-        early_providers: Sequence[str] = (),
+        early_budgets: Optional[Dict[str, int]] = None,
         early_seconds: int = 0,
     ) -> List[str]:
-        """Atomically move due scheduled posts to ``queued`` and return their ids.
+        """Atomically move scheduled posts to ``queued`` and return their ids.
 
-        Posts for ``early_providers`` (platforms that publish at the scheduled
-        time themselves) are claimed up to ``early_seconds`` ahead.
+        Every due post is claimed. ``early_budgets`` maps a platform that
+        publishes at the scheduled time itself to how many of its future posts
+        (up to ``early_seconds`` ahead, soonest first) may be claimed now; due
+        posts of that platform claimed here use up the same budget.
         """
-        result = await db.execute(
+        due = await db.execute(
             text(
                 """
                 UPDATE social_posts
@@ -802,29 +804,60 @@ class SocialRepository:
                     SELECT id FROM social_posts
                     WHERE status = 'scheduled'
                       AND scheduled_for IS NOT NULL
-                      AND (
-                        scheduled_for <= NOW()
-                        OR (
-                          provider = ANY(:early_providers)
-                          AND scheduled_for <= NOW() + make_interval(secs => CAST(:early_seconds AS integer))
-                        )
-                      )
+                      AND scheduled_for <= NOW()
                     ORDER BY scheduled_for ASC
                     LIMIT :limit
                     FOR UPDATE SKIP LOCKED
                 )
-                RETURNING id
+                RETURNING id, provider
                 """
             ),
-            {
-                "limit": limit,
-                "early_providers": list(early_providers),
-                "early_seconds": int(early_seconds),
-            },
+            {"limit": limit},
         )
-        ids = [row.id for row in result.fetchall()]
+        rows = due.fetchall()
+        ids = [row.id for row in rows]
+        for provider, budget in (early_budgets or {}).items():
+            budget -= sum(1 for row in rows if row.provider == provider)
+            if budget <= 0:
+                continue
+            early = await db.execute(
+                text(
+                    """
+                    UPDATE social_posts
+                    SET status = 'queued', updated_at = NOW()
+                    WHERE id IN (
+                        SELECT id FROM social_posts
+                        WHERE status = 'scheduled'
+                          AND provider = :provider
+                          AND scheduled_for > NOW()
+                          AND scheduled_for <= NOW() + make_interval(secs => CAST(:early_seconds AS integer))
+                        ORDER BY scheduled_for ASC
+                        LIMIT :budget
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING id
+                    """
+                ),
+                {"provider": provider, "budget": budget, "early_seconds": int(early_seconds)},
+            )
+            ids.extend(row.id for row in early.fetchall())
         await db.commit()
         return ids
+
+    @staticmethod
+    async def count_recent_claims(db: AsyncSession, provider: str, seconds: int) -> int:
+        """Posts of ``provider`` claimed for upload in the last ``seconds``."""
+        result = await db.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM social_posts
+                WHERE provider = :provider
+                  AND claimed_at > NOW() - make_interval(secs => CAST(:seconds AS integer))
+                """
+            ),
+            {"provider": provider, "seconds": int(seconds)},
+        )
+        return int(result.scalar() or 0)
 
     @staticmethod
     async def list_posts_for_metrics_refresh(
