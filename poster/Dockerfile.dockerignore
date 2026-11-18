@@ -1,0 +1,6 @@
+# Used instead of the root .dockerignore for poster/Dockerfile (context: repo root).
+*
+!backend/src
+!poster/poster.py
+**/__pycache__
+**/*.pyc

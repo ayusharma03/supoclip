@@ -1,0 +1,12 @@
+# Always-on poster: cd poster && docker compose up -d --build
+services:
+  poster:
+    build:
+      context: ..
+      dockerfile: poster/Dockerfile
+    container_name: supoclip-poster
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Queue and clip files. On the homelab POSTER_DATA_DIR is the HDD.
+      - ${POSTER_DATA_DIR:-./data}:/data
